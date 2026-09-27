@@ -12,6 +12,7 @@
 /* 一个控制tick为5 ms：40 tick刷新显示，1000 tick切换页面。 */
 #define DISPLAY_REFRESH_TICKS  40U
 #define DISPLAY_PAGE_TICKS     1000U
+#define DISPLAY_PAGE_COUNT     3U
 
 /*
  * 倾角阈值保护编译开关：
@@ -20,6 +21,12 @@
  * 修改后需要重新编译并烧录固件。
  */
 const uint8_t g_balance_fall_protection_enabled = 0U;
+
+/*
+ * 速度外环开关：角度环整定期间保持0；能稳定扶正后再改为1。
+ * 开启后，速度PI输出目标倾角，而不是直接叠加PWM。
+ */
+const uint8_t g_balance_speed_loop_enabled = 0U;
 
 //状态枚举转字符串
 static const char *state_text(BalanceState state)
@@ -52,7 +59,7 @@ static void display_mpu_page(const BalanceTelemetry *data, BalanceState state)
 
     /* 第一页保留原始ADC计数，便于判断接线、轴方向、饱和和传感器掉线。 */
     OLED_ClearBuffer();
-    OLED_Print(0, 0, "MPU6050 RAW  1/2");
+    OLED_Print(0, 0, "MPU6050 RAW  1/3");
     (void)snprintf(line, sizeof(line), "AX:%6d AY:%6d", data->accel_x, data->accel_y);
     OLED_Print(1, 0, line);
     if(state == BALANCE_STATE_SENSOR_ERROR)
@@ -85,7 +92,7 @@ static void display_angle_page(const BalanceTelemetry *data, BalanceState state)
 
     /* 第二页展示从原始数据到最终控制角的姿态解算链路。 */
     OLED_ClearBuffer();
-    OLED_Print(0, 0, "BALANCE ANGLE 2/2");
+    OLED_Print(0, 0, "BALANCE ANGLE 2/3");
     format_fixed1(value_a, sizeof(value_a), data->accel_angle_deg);
     (void)snprintf(line, sizeof(line), "ACC ABS:%s DEG", value_a);
     OLED_Print(1, 0, line);
@@ -110,6 +117,44 @@ static void display_angle_page(const BalanceTelemetry *data, BalanceState state)
     OLED_Refresh();
 }
 
+static void display_tuning_page(const BalanceTelemetry *data, BalanceState state)
+{
+    char line[32];
+    char value_a[16];
+    char value_b[16];
+
+    /* 第三页集中展示角度环整定和控制周期健康度。 */
+    OLED_ClearBuffer();
+    OLED_Print(0, 0, "ANGLE TUNE    3/3");
+    OLED_Print(1, 0, g_balance_speed_loop_enabled != 0U ?
+                         "MODE:CASCADE" : "MODE:ANGLE ONLY");
+
+    format_fixed1(value_a, sizeof(value_a), data->target_pitch_deg);
+    format_fixed1(value_b, sizeof(value_b), data->fused_pitch_deg);
+    (void)snprintf(line, sizeof(line), "T:%s F:%s", value_a, value_b);
+    OLED_Print(2, 0, line);
+
+    format_fixed1(value_a, sizeof(value_a), data->angle_error_deg);
+    format_fixed1(value_b, sizeof(value_b), data->gyro_rate_dps);
+    (void)snprintf(line, sizeof(line), "E:%s G:%s", value_a, value_b);
+    OLED_Print(3, 0, line);
+
+    format_fixed1(value_a, sizeof(value_a), data->angle_pd_output);
+    (void)snprintf(line, sizeof(line), "PD:%s", value_a);
+    OLED_Print(4, 0, line);
+    (void)snprintf(line, sizeof(line), "PWM L:%d R:%d",
+                   Balance_GetLeftPwm(), Balance_GetRightPwm());
+    OLED_Print(5, 0, line);
+    (void)snprintf(line, sizeof(line), "LOOP:%u MAX:%u US",
+                   (unsigned int)ControlTimer_GetLastExecutionUs(),
+                   (unsigned int)ControlTimer_GetMaxExecutionUs());
+    OLED_Print(6, 0, line);
+    (void)snprintf(line, sizeof(line), "OVR:%lu %s",
+                   (unsigned long)ControlTimer_GetOverrunCount(), state_text(state));
+    OLED_Print(7, 0, line);
+    OLED_Refresh();
+}
+
 static void display_status(void)
 {
     BalanceTelemetry telemetry;
@@ -118,13 +163,17 @@ static void display_status(void)
 
     /* 用200 Hz控制计数切页，不依赖主循环和OLED传输耗时。 */
     Balance_GetTelemetry(&telemetry);
-    if(((ticks / DISPLAY_PAGE_TICKS) & 1U) == 0U)
+    switch((ticks / DISPLAY_PAGE_TICKS) % DISPLAY_PAGE_COUNT)
     {
-        display_mpu_page(&telemetry, state);
-    }
-    else
-    {
-        display_angle_page(&telemetry, state);
+        case 0U:
+            display_mpu_page(&telemetry, state);
+            break;
+        case 1U:
+            display_angle_page(&telemetry, state);
+            break;
+        default:
+            display_tuning_page(&telemetry, state);
+            break;
     }
 }
 

@@ -27,10 +27,15 @@ typedef struct
     float gyro_predicted_angle_deg;   /* 陀螺仪积分得到的一步预测角 */
     float fused_pitch_deg;            /* 互补滤波输出，也是PD反馈角 */
     float upright_angle_deg;          /* 上电校准得到的机械直立零点 */
+    float target_pitch_deg;           /* 速度PI给出的目标倾角 */
+    float angle_error_deg;            /* 目标倾角减去融合倾角 */
+    float angle_pd_output;            /* 角度PD的PWM指令 */
 } BalanceTelemetry;
 
 /* 在main.c中定义：1启用倾角阈值保护，0关闭。 */
 extern const uint8_t g_balance_fall_protection_enabled;
+/* 在main.c中定义：角度环调试期间为0，角度环稳定后再改为1。 */
+extern const uint8_t g_balance_speed_loop_enabled;
 
 void Balance_Init(void);
 void Balance_ControlStep(void);

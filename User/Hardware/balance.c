@@ -33,13 +33,15 @@ static volatile float accel_angle_deg;
 static volatile float relative_accel_angle_deg;
 static volatile float gyro_rate_dps;
 static volatile float gyro_predicted_angle_deg;
+static volatile float target_pitch_deg;
+static volatile float telemetry_angle_error_deg;
+static volatile float angle_pd_output;
 
 static float gyro_bias_dps;
 static float upright_angle_deg;
 static float calibration_angle_sum;
 static float calibration_gyro_sum;
 static float speed_integral;
-static float speed_output;
 static uint16_t running_ticks;
 static uint8_t speed_divider;
 static uint8_t sensor_failures;
@@ -62,7 +64,9 @@ static void enter_safe_state(BalanceState state)
 {
     left_pwm = 0;
     right_pwm = 0;
-    speed_output = 0.0f;
+    target_pitch_deg = 0.0f;
+    telemetry_angle_error_deg = 0.0f;
+    angle_pd_output = 0.0f;
     speed_integral = 0.0f;
     balance_state = state;
     Motor_EmergencyStop();
@@ -89,7 +93,7 @@ static void calibration_step(float accel_angle, float gyro_rate)
         gyro_bias_dps = calibration_gyro_sum / (float)calibration_count;
         pitch_deg = 0.0f;
         speed_integral = 0.0f;
-        speed_output = 0.0f;
+        target_pitch_deg = 0.0f;
         speed_divider = 0U;
         running_ticks = 0U;
         Encoder_Reset();
@@ -122,6 +126,9 @@ void Balance_Init(void)
     relative_accel_angle_deg = 0.0f;
     gyro_rate_dps = 0.0f;
     gyro_predicted_angle_deg = 0.0f;
+    target_pitch_deg = 0.0f;
+    telemetry_angle_error_deg = 0.0f;
+    angle_pd_output = 0.0f;
     calibration_angle_sum = 0.0f;
     calibration_gyro_sum = 0.0f;
     sensor_failures = 0U;
@@ -225,23 +232,38 @@ void Balance_ControlStep(void)
 
         speed_divider = 0U;
         average_speed_rps = average_speed_rps * 0.70f + measured_speed * 0.30f;
-        speed_error = -average_speed_rps;
-        speed_integral += speed_error * BALANCE_SPEED_DT;
-        speed_integral = clamp_float(speed_integral,
-                                     -BALANCE_SPEED_INTEGRAL_LIMIT,
-                                     BALANCE_SPEED_INTEGRAL_LIMIT);
-        speed_output = BALANCE_SPEED_KP * speed_error +
-                       BALANCE_SPEED_KI * speed_integral;
-        speed_output = clamp_float(speed_output,
-                                   -BALANCE_SPEED_OUTPUT_LIMIT,
-                                   BALANCE_SPEED_OUTPUT_LIMIT);
+        if(g_balance_speed_loop_enabled != 0U)
+        {
+            /*
+             * 外环只产生目标倾角，内环PD再把角度误差转成PWM。
+             * 这是真正的串级控制，也便于先单独整定角度环。
+             */
+            speed_error = -average_speed_rps;
+            speed_integral += speed_error * BALANCE_SPEED_DT;
+            speed_integral = clamp_float(speed_integral,
+                                         -BALANCE_SPEED_INTEGRAL_LIMIT,
+                                         BALANCE_SPEED_INTEGRAL_LIMIT);
+            target_pitch_deg = BALANCE_SPEED_KP * speed_error +
+                               BALANCE_SPEED_KI * speed_integral;
+            target_pitch_deg = clamp_float(target_pitch_deg,
+                                           -BALANCE_SPEED_TARGET_ANGLE_LIMIT,
+                                           BALANCE_SPEED_TARGET_ANGLE_LIMIT);
+        }
+        else
+        {
+            /* 调试角度环时清除外环状态，避免重新开启时积分突变。 */
+            speed_integral = 0.0f;
+            target_pitch_deg = 0.0f;
+        }
     }
 
-    /* 目标角为0度；PD输出与速度PI修正量相加后驱动两个轮子。 */
-    angle_error = -pitch_deg;
+    /* 速度环关闭时target_pitch_deg恒为0，即纯角度PD模式。 */
+    angle_error = target_pitch_deg - pitch_deg;
     balance_output = BALANCE_ANGLE_KP * angle_error -
                      BALANCE_ANGLE_KD * gyro_rate;
-    total_output = balance_output + speed_output;
+    total_output = balance_output;
+    telemetry_angle_error_deg = angle_error;
+    angle_pd_output = balance_output;
 
     if(running_ticks < BALANCE_SOFT_START_TICKS)
     {
@@ -296,4 +318,7 @@ void Balance_GetTelemetry(BalanceTelemetry *telemetry)
     telemetry->gyro_predicted_angle_deg = gyro_predicted_angle_deg;
     telemetry->fused_pitch_deg = pitch_deg;
     telemetry->upright_angle_deg = upright_angle_deg;
+    telemetry->target_pitch_deg = target_pitch_deg;
+    telemetry->angle_error_deg = telemetry_angle_error_deg;
+    telemetry->angle_pd_output = angle_pd_output;
 }

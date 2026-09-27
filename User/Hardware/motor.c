@@ -1,21 +1,18 @@
 #include "motor.h"
+#include "motor_config.h"
 #include "ch32v20x.h"
-
-#define MOTOR_COMMAND_MAX    1000
-#define MOTOR_DEAD_ZONE      100U
-#define MOTOR_TIMER_PERIOD   4799U
 
 static bool motor_enabled;
 
-static uint16_t command_to_compare(int16_t command)
+static uint16_t command_to_compare(int16_t command, uint16_t dead_zone)
 {
     uint32_t magnitude = command < 0 ? (uint32_t)(-command) : (uint32_t)command;
     uint32_t compensated;
 
     if(magnitude == 0U) return 0U;
     if(magnitude > MOTOR_COMMAND_MAX) magnitude = MOTOR_COMMAND_MAX;
-    compensated = MOTOR_DEAD_ZONE +
-                  ((uint32_t)MOTOR_COMMAND_MAX - MOTOR_DEAD_ZONE) * magnitude /
+    compensated = dead_zone +
+                  ((uint32_t)MOTOR_COMMAND_MAX - dead_zone) * magnitude /
                   MOTOR_COMMAND_MAX;
     return (uint16_t)(compensated * (MOTOR_TIMER_PERIOD + 1U) /
                       MOTOR_COMMAND_MAX);
@@ -117,17 +114,21 @@ void Motor_SetPWM(int16_t left, int16_t right)
     if(right > MOTOR_COMMAND_MAX) right = MOTOR_COMMAND_MAX;
     if(right < -MOTOR_COMMAND_MAX) right = -MOTOR_COMMAND_MAX;
 
+    /* Small commands around zero otherwise cause rapid direction switching. */
+    if(left >= -MOTOR_COMMAND_STOP_BAND && left <= MOTOR_COMMAND_STOP_BAND) left = 0;
+    if(right >= -MOTOR_COMMAND_STOP_BAND && right <= MOTOR_COMMAND_STOP_BAND) right = 0;
+
     if(left > 0)
     {
         GPIO_ResetBits(GPIOB, GPIO_Pin_13);
         GPIO_SetBits(GPIOB, GPIO_Pin_14);
-        TIM_SetCompare1(TIM1, command_to_compare(left));
+        TIM_SetCompare1(TIM1, command_to_compare(left, MOTOR_LEFT_DEAD_ZONE));
     }
     else if(left < 0)
     {
         GPIO_SetBits(GPIOB, GPIO_Pin_13);
         GPIO_ResetBits(GPIOB, GPIO_Pin_14);
-        TIM_SetCompare1(TIM1, command_to_compare(left));
+        TIM_SetCompare1(TIM1, command_to_compare(left, MOTOR_LEFT_DEAD_ZONE));
     }
     else left_stop();
 
@@ -135,13 +136,13 @@ void Motor_SetPWM(int16_t left, int16_t right)
     {
         GPIO_SetBits(GPIOA, GPIO_Pin_11);
         GPIO_ResetBits(GPIOA, GPIO_Pin_10);
-        TIM_SetCompare2(TIM1, command_to_compare(right));
+        TIM_SetCompare2(TIM1, command_to_compare(right, MOTOR_RIGHT_DEAD_ZONE));
     }
     else if(right < 0)
     {
         GPIO_ResetBits(GPIOA, GPIO_Pin_11);
         GPIO_SetBits(GPIOA, GPIO_Pin_10);
-        TIM_SetCompare2(TIM1, command_to_compare(right));
+        TIM_SetCompare2(TIM1, command_to_compare(right, MOTOR_RIGHT_DEAD_ZONE));
     }
     else right_stop();
 }

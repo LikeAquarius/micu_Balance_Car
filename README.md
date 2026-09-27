@@ -10,12 +10,14 @@ CH32V203 两轮自平衡小车工程，按 `micu平衡车插件版 V1.1` 原理�
 - MPU6050 连续稳定约 2 秒后，自动计算陀螺仪零偏和车体直立零点。
 - 校准成功后自动使能电机并进入平衡控制。
 - 姿态环 200 Hz：MPU6050采样、互补滤波、角度 PD、电机输出。
-- 速度环 20 Hz：编码器测速、速度 PI，当前目标速度为 0。
+- 速度环 20 Hz：编码器测速，PI输出限幅目标倾角；当前默认关闭，便于先整定角度环。
 - 电机启动阶段有 1 秒软限幅，速度积分有防饱和限制。
 - MPU6050连续通信失败3次，立即关闭电机。
-- 相对直立角超过 `+/-45°` 后锁存跌倒故障，必须重新上电才能恢复。
-- `main.c`中的 `g_balance_fall_protection_enabled` 控制45°保护：`1`启用，`0`关闭。
-- 0.96英寸、128×64 OLED每200 ms刷新一次，两个页面每5秒切换。
+- 倾角保护启用时，相对直立角超过 `+/-45°` 后锁存跌倒故障，必须重新上电才能恢复。
+- `main.c`中的 `g_balance_fall_protection_enabled` 控制45°保护：`1`启用，`0`关闭；当前为 `0`。
+- `main.c`中的 `g_balance_speed_loop_enabled` 控制速度外环；当前为 `0`，即纯角度PD调试模式。
+- 0.96英寸、128×64 OLED每200 ms刷新一次，三个页面每5秒切换。
+- TIM4记录每次200 Hz控制中断的本次/历史最大执行时间及超期次数。
 - OLED未连接或初始化失败时，平衡控制仍可运行；显示不会阻塞控制逻辑。
 
 ## 2. 工程代码结构
@@ -33,6 +35,7 @@ Balance_Car/
 │     ├─ mpu6050.c/.h             MPU6050初始化和14字节连续采样
 │     ├─ encoder.c/.h             TIM2/TIM3编码器计数和方向修正
 │     ├─ motor.c/.h               TB6612方向、PWM、使能和紧急停止
+│     ├─ motor_config.h            电机命令范围、左右死区、停转带和PWM周期
 │     ├─ oled.c/.h                SSD1306缓冲区、字符显示和oled_printf
 │     ├─ oledfont.h               6×8 ASCII字库
 │     ├─ soft_i2c.c/.h            可复用的软件I2C驱动
@@ -103,7 +106,7 @@ Balance_Car/
 5. 用互补滤波得到最终控制角 `pitch_deg`。
 6. 判断融合角是否超过45°，超过则紧急停止。
 7. 每10个控制周期读取一次编码器，即速度环每50 ms执行一次。
-8. 速度PI输出修正量，角度PD输出电机控制量。
+8. 速度外环启用时，PI输出目标倾角；角度PD把倾角误差转成电机PWM指令。
 9. 经过软启动限幅、方向修正后输出左右电机PWM。
 
 OLED刷新位于主循环，不在TIM4中断里。这样完整刷新128×64显存时，不会把显示传输时间加入控制中断。
@@ -225,7 +228,7 @@ ACC ABS = -atan2(AX, AZ) ≈ θ
 
 ## 7. 控制算法
 
-当前使用“速度PI + 角度PD”的串级控制思路。
+当前使用“速度PI外环 + 角度PD内环”的串级控制。角度环整定阶段通过编译开关关闭速度外环。
 
 ```text
 left_speed  = left_count  / (408.173 × 0.05)
@@ -234,17 +237,20 @@ average_speed = 0.5 × (left_speed + right_speed)
 
 speed_error = 0 - average_speed
 speed_integral += speed_error × 0.05
-speed_output = Speed_Kp × speed_error
+target_pitch = Speed_Kp × speed_error
              + Speed_Ki × speed_integral
+target_pitch = limit(target_pitch, -5°, +5°)
 
-angle_error = 0 - pitch
+angle_error = target_pitch - pitch
 balance_output = Angle_Kp × angle_error
                - Angle_Kd × gyro_rate
 
-total_output = balance_output + speed_output
+total_output = balance_output
 left_pwm  = limit(total_output × left_motor_sign)
 right_pwm = limit(total_output × right_motor_sign)
 ```
+
+`g_balance_speed_loop_enabled = 0U` 时，`target_pitch` 被强制为0°且速度积分清零，因此速度环不会干扰角度PD整定。
 
 目前没有角度积分项。平衡车角度环通常先用PD，积分容易在车体被手扶、卡住或倒地时积累过大输出。
 
@@ -271,19 +277,20 @@ right_pwm = limit(total_output × right_motor_sign)
 - `BALANCE_COMPLEMENTARY_ALPHA = 0.985`：陀螺预测角权重。
 - `BALANCE_FALL_ANGLE_DEG = 45.0`：相对直立角超过该值立即断电。
 - `SENSOR_FAILURE_LIMIT = 3`：连续读取失败3次后断电，定义在 `balance.c`。
-- `g_balance_fall_protection_enabled = 1`：倾角保护总开关，定义在 `main.c`；改为 `0` 后重新编译即可关闭。
+- `g_balance_fall_protection_enabled = 0`：倾角保护总开关，定义在 `main.c`；当前为关闭状态。
+- `g_balance_speed_loop_enabled = 0`：速度外环开关；当前是纯角度PD整定模式。
 
 角度PD初值：
 
 - `BALANCE_ANGLE_KP = 22.0`：倾角误差放大倍数。
 - `BALANCE_ANGLE_KD = 0.90`：角速度阻尼，主要抑制快速振荡。
 
-速度PI初值：
+速度PI初值（输出单位已改为度）：
 
-- `BALANCE_SPEED_KP = 70.0`。
-- `BALANCE_SPEED_KI = 25.0`。
-- `BALANCE_SPEED_INTEGRAL_LIMIT = 8.0`：积分绝对值限制。
-- `BALANCE_SPEED_OUTPUT_LIMIT = 300.0`：速度环最大修正输出。
+- `BALANCE_SPEED_KP = 1.0`。
+- `BALANCE_SPEED_KI = 0.30`。
+- `BALANCE_SPEED_INTEGRAL_LIMIT = 5.0`：积分绝对值限制。
+- `BALANCE_SPEED_TARGET_ANGLE_LIMIT = 5.0`：外环目标倾角限制为±5°。
 
 PWM与电机：
 
@@ -291,7 +298,8 @@ PWM与电机：
 - `BALANCE_FULL_PWM_LIMIT = 1000`：正常运行最大控制量。
 - `BALANCE_SOFT_START_TICKS = 200`：约1秒内从300线性放宽到1000。
 - `MOTOR_COMMAND_MAX = 1000`：`Motor_SetPWM()`输入范围为-1000～1000。
-- `MOTOR_DEAD_ZONE = 100`：非零命令加入约10%的启动死区补偿。
+- `MOTOR_COMMAND_STOP_BAND = 5`：±5以内的小命令按停转处理，减少零点换向抖动。
+- `MOTOR_LEFT_DEAD_ZONE = 100`、`MOTOR_RIGHT_DEAD_ZONE = 100`：左右电机可分别标定启动死区。
 - `MOTOR_TIMER_PERIOD = 4799`：96 MHz定时器时钟下产生约20 kHz PWM。
 
 编码器与方向：
@@ -312,7 +320,7 @@ OLED使用6×8字体，共8行，每行最多21个ASCII字符。
 - `DISPLAY_REFRESH_TICKS = 40`：40个5 ms周期，即每200 ms刷新。
 - `DISPLAY_PAGE_TICKS = 1000`：1000个5 ms周期，即每5秒切换页面。
 
-第一页 `MPU6050 RAW 1/2`：
+第一页 `MPU6050 RAW 1/3`：
 
 - `AX/AY/AZ`：三轴加速度原始值。
 - `GX/GY/GZ`：三轴陀螺仪原始值。
@@ -321,7 +329,7 @@ OLED使用6×8字体，共8行，每行最多21个ASCII字符。
 - `ACC:2G`、`GYRO:500DPS`：当前量程。
 - `STATE`：平衡状态。
 
-第二页 `BALANCE ANGLE 2/2`：
+第二页 `BALANCE ANGLE 2/3`：
 
 - `ACC ABS`：加速度计计算的绝对安装角。
 - `ACC REL`：减去校准直立零点后的加速度角。
@@ -330,6 +338,16 @@ OLED使用6×8字体，共8行，每行最多21个ASCII字符。
 - `FUSED`：互补滤波输出，也是平衡PD实际使用的角度。
 - `ZERO`：上电校准得到的直立绝对角。
 - `LIM`：跌倒保护阈值45°。
+
+第三页 `ANGLE TUNE 3/3`：
+
+- `MODE`：`ANGLE ONLY`为纯角度环，`CASCADE`为启用速度外环。
+- `T/F`：目标倾角/实时融合倾角。
+- `E/G`：角度误差/俯仰角速度。
+- `PD`：角度PD计算出的PWM命令。
+- `PWM L/R`：经软启动限幅后的左右轮命令。
+- `LOOP/MAX`：本次/上电后最大控制中断执行时间，单位微秒。
+- `OVR`：执行时间超过5000 μs的次数，正常必须始终为0。
 
 显示过程先修改OLED内存缓冲区，最后统一调用一次 `OLED_Refresh()`。`oled_printf(row, column, ...)`可用于简单选行、选列显示；连续多行刷新优先使用 `OLED_Print()`后统一刷新。
 
@@ -371,7 +389,7 @@ I2C本身没有为这14字节数据提供CRC，当前代码也没有做加速度
 
 - MPU6050初始化失败。
 - MPU6050连续读取失败3次。
-- 融合角绝对值超过45°。
+- 倾角保护开关为1时，融合角绝对值超过45°。
 - 程序主动调用 `Motor_EmergencyStop()`。
 
 `FALLEN`和`SENSOR_ERROR`是锁定状态，当前设计需要重新上电复位，避免倒地后电机突然自行恢复。
@@ -379,13 +397,15 @@ I2C本身没有为这14字节数据提供CRC，当前代码也没有做加速度
 倾角保护开关位于 `User/main.c`：
 
 ```c
-const uint8_t g_balance_fall_protection_enabled = 1U;
+const uint8_t g_balance_fall_protection_enabled = 0U;
 ```
 
 - `1U`：启用 `BALANCE_FALL_ANGLE_DEG` 阈值保护。
 - `0U`：关闭倾角阈值检查，但MPU6050通信故障保护仍然有效。
 - 关闭后车辆倒地时电机仍可能继续输出，只能在架空车轮或断开电机动力电源的调试环境中使用。
 - 修改该值后必须重新编译并重新烧录。
+
+当前代码中该值为 `0U`，用于架空观察完整角度范围。进入地面平衡调试前，建议恢复为 `1U`。
 
 ## 11. 首次上电调试顺序
 
@@ -396,17 +416,19 @@ const uint8_t g_balance_fall_protection_enabled = 1U;
 5. 向前倾斜车体，记录 `FUSED` 的正负号；轮胎必须向同一方向追赶车体。
 6. 如果轮子追赶方向错误，立即断电，只调整左右 `MOTOR_SIGN`。
 7. 单独验证编码器正反方向；正方向转动时测速应为正，否则调整对应 `ENCODER_SIGN`。
-8. 方向全部正确后，先调角度 `Kp/Kd`，最后再调速度 `Kp/Ki`。
-9. 未完成架空方向测试前，不要直接把小车放到地面运行。
+8. 保持 `g_balance_speed_loop_enabled = 0U`，先调角度 `Kp/Kd`。
+9. 观察第三页：`LOOP MAX` 必须显著小于5000 μs，`OVR` 必须为0。
+10. 角度环能稳定扶正后，再把 `g_balance_speed_loop_enabled` 改为 `1U`调速度 `Kp/Ki`。
+11. 未完成架空方向测试前，不要直接把小车放到地面运行。
 
 ## 12. PID调试原则
 
-建议先临时把速度环增益设为0，只调角度PD：
+现在无需把速度增益改为0；保持 `g_balance_speed_loop_enabled = 0U` 即可只调角度PD：
 
 1. 从较小的 `BALANCE_ANGLE_KP` 开始，确认电机追赶方向正确。
 2. 缓慢增加 `Kp`，直到车体有明显扶正能力，但可能快速振荡。
 3. 增加 `Kd` 抑制快速振荡和过冲。
-4. 角度环能短暂站立后，再恢复速度环。
+4. 角度环能短暂站立后，再将速度环开关改为 `1U`。
 5. 调整速度 `Kp` 减少持续移动，再小幅增加 `Ki` 消除慢速漂移。
 6. 每次只改一个参数并记录现象，不要同时修改多个增益和方向符号。
 
@@ -427,7 +449,7 @@ const uint8_t g_balance_fall_protection_enabled = 1U;
 - `Balance_Car.map`：查看函数、变量和存储空间占用。
 - `Balance_Car.lst`：反汇编及源码对应列表。
 
-当前版本已通过编译：Flash约 `16.5 KB`，初始化数据约 `128 B`，BSS约 `3.2 KB`。
+当前版本已通过完整交叉编译和链接：`text=17192 B`，初始化数据 `128 B`，BSS `3236 B`。
 
 ## 14. 后续维护约定
 

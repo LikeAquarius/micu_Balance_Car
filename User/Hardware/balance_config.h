@@ -18,10 +18,14 @@
 /* 起调增益，输出按Motor_SetPWM(-1000..1000)的范围缩放，并非最终实车参数。 */
 #define BALANCE_ANGLE_KP                   22.0f
 #define BALANCE_ANGLE_KD                   0.90f
-#define BALANCE_SPEED_KP                   70.0f
-#define BALANCE_SPEED_KI                   25.0f
-#define BALANCE_SPEED_INTEGRAL_LIMIT       8.0f
-#define BALANCE_SPEED_OUTPUT_LIMIT         300.0f
+/*
+ * 速度PI输出的是目标俯仰角，不是PWM命令。
+ * 角度PD内环完成实车整定之前，应在main.c中关闭速度外环。
+ */
+#define BALANCE_SPEED_KP                   1.0f
+#define BALANCE_SPEED_KI                   0.30f
+#define BALANCE_SPEED_INTEGRAL_LIMIT       5.0f
+#define BALANCE_SPEED_TARGET_ANGLE_LIMIT   5.0f
 
 #define BALANCE_START_PWM_LIMIT            300
 #define BALANCE_FULL_PWM_LIMIT             1000

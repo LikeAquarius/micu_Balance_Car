@@ -4,6 +4,7 @@
 # MounRiver Studio local workspace state (contains absolute local paths)
 /.mrs/
 /.uiconfig
+/.spec-workflow/
 
 # Compiler and linker intermediates, wherever they appear
 *.o
