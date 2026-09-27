@@ -1,0 +1,34 @@
+# MounRiver Studio / GCC generated build directory
+/obj/
+
+# MounRiver Studio local workspace state (contains absolute local paths)
+/.mrs/
+/.uiconfig
+
+# Compiler and linker intermediates, wherever they appear
+*.o
+*.d
+*.elf
+*.lst
+*.map
+*.siz
+*.bin
+*.hex
+*.a
+
+# Editor and operating-system temporary files
+*.bak
+*.tmp
+*.temp
+*.log
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local archives are not source code
+*.rar
+*.zip
+*.7z
